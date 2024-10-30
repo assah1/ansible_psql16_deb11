@@ -1,0 +1,7 @@
+timezone: "Europe/Moscow"
+
+db_name: <db_name>
+db_user: <db_user>
+db_passwordd: <db_password>
+ssh_port: <ssh_port>
+psql_port: <psql_port>
