@@ -1,0 +1,204 @@
+- hosts: servers
+
+  become: yes
+
+  vars_files:
+    - vars.yml
+
+  tasks:
+    - name: "Loading variables"
+      include_vars:
+        file: vars.yml
+
+    - name: "Install packages"
+      become: true
+      become_user: root
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - python3-psycopg2
+        - ca-certificates
+        - net-tools
+        - rsyslog
+        - gnupg2
+        - curl
+        - htop
+        - curl
+        - wget
+        - vim
+        - git
+        - ufw
+
+    - name: "Set timezone to {{ timezone }}"
+      become: true
+      community.general.timezone:
+        name: "{{ timezone }}"
+
+    - name: "Deny everything, enable UFW, set logging"
+      community.general.ufw:
+        state: enabled
+        default: deny
+        logging: 'on'
+
+    - name: "Allow SSH"
+      community.general.ufw:
+        rule: limit
+        port: "{{ ssh_port }}"
+        proto: tcp
+
+    - name: "Allow PostgreSQL access"
+      community.general.ufw:
+        rule: allow
+        port: "{{ psql_port }}"
+        proto: tcp
+
+    - name: "Allow HTTP"
+      community.general.ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: "Allow HTTPS"
+      community.general.ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+
+    - name: "Configure rsyslog for logging"
+      copy:
+        dest: /etc/rsyslog.d/50-ufw.conf
+        content: |
+          # Log UFW messages
+          :msg, contains, "UFW" /var/log/ufw.log
+          & stop
+
+    - name: "Set UFW logging level"
+      command: ufw logging medium
+
+    - name: "Restart rsyslog"
+      service:
+        name: rsyslog
+        state: restarted
+
+    - name: "Download and add PostgreSQL GPG key"
+      get_url:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        dest: /tmp/postgresql.asc
+
+    - name: Add GPG key to trusted keys
+      command: gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg /tmp/postgresql.asc
+
+    - name: "Add PostgreSQL APT repository"
+      lineinfile:
+        path: /etc/apt/sources.list.d/pgdg.list
+        line: "deb https://apt.postgresql.org/pub/repos/apt bullseye-pgdg main"
+        create: yes
+
+    - name: "Update APT package list"
+      apt:
+        update_cache: yes
+
+    - name: "Install PostgreSQL"
+      apt:
+        name: postgresql-16
+        state: present
+
+    - name: "Start and enable PostgreSQL service"
+      systemd:
+        name: postgresql@16-main.service
+        state: started
+        enabled: yes
+
+    - name: "Find out if PostgreSQL is initialized"
+      ansible.builtin.stat:
+        path: "/var/lib/postgresql/16/main/PG_VERSION"
+      register: postgres_data
+
+    - name: "Initialize PostgreSQL"
+      shell: "pg_ctl -D /var/lib/postgresql/16/main initdb"
+      when: not postgres_data.stat.exists
+
+    - name: "Start and enable services"
+      service: "name={{ item }} state=started enabled=yes"
+      with_items:
+        - postgresql
+
+    - name: "Create app database"
+      postgresql_db:
+        state: present
+        name: "{{ db_name }}"
+      become: yes
+      become_user: postgres
+
+    - name: "Create db user"
+      postgresql_user:
+        state: present
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+      become: yes
+      become_user: postgres
+
+    - name: "Grant db user access to app db"
+      postgresql_privs:
+        type: database
+        database: "{{ db_name }}"
+        roles: "{{ db_user }}"
+        grant_option: no
+        privs: all
+      become: yes
+      become_user: postgres
+    
+    - name: "Remove old configuration lines"
+      replace:
+        path: /etc/postgresql/16/main/postgresql.conf
+        regexp: "{{ item }}"
+        replace: ""
+      loop:
+        - "^port =.*"
+        - "^max_connections =.*"
+        - "^shared_buffers =.*"
+    
+    - name: Add main configuration"
+      lineinfile:
+        dest: /etc/postgresql/16/main/postgresql.conf
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "listen_addresses = '*'"
+        - "port = {{ psql_port }}"
+        - "max_connections = 100"
+        - "shared_buffers = 256MB"
+        - "work_mem = 4MB"
+        - "maintenance_work_mem = 64MB"
+        - "wal_level = replica"
+        - "synchronous_commit = on"
+    
+    - name: Add logging configuration"
+      lineinfile:
+        dest: /etc/postgresql/16/main/postgresql.conf
+        line: "{{ item }}"
+        create: yes
+      loop:
+        - "log_destination = 'stderr'"
+        - "logging_collector = on"
+        - "log_directory = 'pg_log'"
+        - "log_filename = 'postgresql-%Y-%m-%d_%H%M%S.log'"
+        - "log_file_mode = 0600"
+        - "log_rotation_age = 1d"
+        - "log_statement = 'all'"
+    
+    - name: Add md5 connection method for any user from any network
+      lineinfile:
+        dest: /etc/postgresql/16/main/pg_hba.conf
+        line: "host all all 0.0.0.0/0 md5"
+        create: yes
+        state: present
+      become: yes
+      become_user: postgres
+
+
+  handlers:
+    - name: restart postgres
+      service: name=postgresql state=restarted
+    
