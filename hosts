@@ -1,0 +1,4 @@
+[servers]
+host01 ansible_host=<host01_IP> ansible_user=<user01> ansible_password=<passwd01>
+host02 ansible_host=<host02_IP> ansible_user=<user02> ansible_password=<passwd02>
+host03 ansible_host=<host03_IP> ansible_user=<user03> ansible_password=<passwd03>
